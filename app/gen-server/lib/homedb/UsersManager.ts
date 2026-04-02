@@ -19,6 +19,7 @@ import { AclRule } from "app/gen-server/entity/AclRule";
 import { Document } from "app/gen-server/entity/Document";
 import { Group } from "app/gen-server/entity/Group";
 import { Login } from "app/gen-server/entity/Login";
+import { Organization } from "app/gen-server/entity/Organization";
 import { Pref } from "app/gen-server/entity/Pref";
 import { User } from "app/gen-server/entity/User";
 import { HomeDBManager, PermissionDeltaAnalysis, Scope, UserIdDelta } from "app/gen-server/lib/homedb/HomeDBManager";
@@ -28,6 +29,8 @@ import {
 import { Permissions } from "app/gen-server/lib/Permissions";
 import { appSettings } from "app/server/lib/AppSettings";
 import { getPersonalOrgsEnabled } from "app/server/lib/gristSettings";
+import { getSingleOrg } from "app/common/gristUrls";
+import log from "app/server/lib/log";
 
 import * as crypto from "crypto";
 
@@ -542,6 +545,46 @@ export class UsersManager {
           await this._homeDb.updateOrg({ userId: user.id }, org.id, { userOrgPrefs }, manager);
         }
       }
+
+      // Auto-add new users to GRIST_SINGLE_ORG if GRIST_AUTO_ADD_TO_ORG is enabled
+      const singleOrg = getSingleOrg();
+      const autoAddRole = process.env.GRIST_AUTO_ADD_TO_ORG;
+      if (user.isFirstTimeUser && singleOrg && autoAddRole && !NON_LOGIN_EMAILS.includes(login.email)) {
+        // Valid roles: 'viewers', 'editors', 'owners'
+        const validRoles = ['viewers', 'editors', 'owners'];
+        const role = validRoles.includes(autoAddRole) ? autoAddRole : 'viewers';
+        try {
+          // Find the organization by domain name
+          const targetOrg = await manager.createQueryBuilder()
+            .select("orgs")
+            .from(Organization, "orgs")
+            .leftJoinAndSelect("orgs.aclRules", "acl_rules")
+            .leftJoinAndSelect("acl_rules.group", "groups")
+            .leftJoinAndSelect("groups.memberUsers", "member_users")
+            .where("orgs.domain = :domain", { domain: singleOrg })
+            .getOne();
+
+          if (targetOrg && targetOrg.aclRules) {
+            // Find the group matching the desired role
+            const aclRule = targetOrg.aclRules.find(
+              (rule) => rule.group && rule.group.name === role
+            );
+            if (aclRule && aclRule.group) {
+              const group = aclRule.group;
+              group.memberUsers = group.memberUsers || [];
+              // Check if user is not already a member
+              if (!group.memberUsers.find((u) => u.id === user!.id)) {
+                group.memberUsers.push(user!);
+                await manager.save(group);
+                log.info(`Auto-added user ${login.email} to org ${singleOrg} as ${role}`);
+              }
+            }
+          }
+        } catch (e) {
+          log.warn(`Failed to auto-add user ${login.email} to org ${singleOrg}: ${e}`);
+        }
+      }
+
       if (needUpdate) {
         // We changed the db - reload user in order to give consistent results.
         // In principle this could be optimized, but this is simpler to maintain.
