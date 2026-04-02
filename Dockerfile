@@ -126,6 +126,16 @@ COPY --from=sandbox /runsc /usr/bin/runsc
 # Add files needed for running server.
 COPY package.json /grist/package.json
 COPY bower_components /grist/bower_components
+# Fix bower_components: git stores symlinks as text files on Windows,
+# so COPY brings them in as plain files. Convert them to real symlinks.
+RUN cd /grist/bower_components && \
+    for f in *; do \
+      if [ -f "$f" ] && [ ! -L "$f" ]; then \
+        target=$(cat "$f"); \
+        rm "$f"; \
+        ln -s "$target" "$f"; \
+      fi; \
+    done
 COPY sandbox /grist/sandbox
 COPY plugins /grist/plugins
 COPY static /grist/static
