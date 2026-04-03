@@ -417,20 +417,32 @@ export class OIDCBuilder {
   protected async _initClient({ issuerUrl, clientId, clientSecret, extraMetadata }:
   { issuerUrl: string, clientId: string, clientSecret: string, extraMetadata: Partial<ClientMetadata> },
   ): Promise<void> {
-    try {
-      const issuer = await Issuer.discover(issuerUrl);
-      this._client = new issuer.Client({
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uris: this._redirectUrl ? [this._redirectUrl] : undefined,
-        response_types: ["code"],
-        ...extraMetadata,
-      });
-    } catch (err) {
-      log.error(`Failed to initialize OIDC client for issuer ${issuerUrl}: ${(err as Error).stack}`, err);
-      throw new Error(
-        `Failed to initialize OIDC client for issuer ${issuerUrl}: ${(err as Error).message}`,
-      );
+    const maxRetries = 5;
+    const baseDelayMs = 2000;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const issuer = await Issuer.discover(issuerUrl);
+        this._client = new issuer.Client({
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uris: this._redirectUrl ? [this._redirectUrl] : undefined,
+          response_types: ["code"],
+          ...extraMetadata,
+        });
+        return;
+      } catch (err) {
+        if (attempt < maxRetries) {
+          const delayMs = baseDelayMs * attempt;
+          log.warn(`Failed to reach OIDC issuer ${issuerUrl} (attempt ${attempt}/${maxRetries}), ` +
+            `retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        } else {
+          log.error(`Failed to initialize OIDC client for issuer ${issuerUrl}: ${(err as Error).stack}`, err);
+          throw new Error(
+            `Failed to initialize OIDC client for issuer ${issuerUrl}: ${(err as Error).message}`,
+          );
+        }
+      }
     }
   }
 
